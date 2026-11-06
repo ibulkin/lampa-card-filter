@@ -1,4 +1,4 @@
-/* Lampa card filter 1.1.0. ES5 for LG webOS. */
+/* Lampa card filter 1.2.0. ES5 for LG webOS. */
 (function install(attempt) {
     'use strict';
     var app = window.Lampa;
@@ -42,8 +42,8 @@
     function animationSection(section) {
         if (!section) return false;
         var title = String(section.title || '').trim();
-        if (/^(мультфильмы|мультсериалы|cartoons|animated series)$/i.test(title) ||
-            /\((мультфильмы|мультсериалы)\)\s*$/i.test(title)) return true;
+        if (/^(мультфильмы?|мультсериалы?|cartoons|animated series)$/i.test(title) ||
+            /\((мультфильмы?|мультсериалы?)\)\s*$/i.test(title)) return true;
         if (String(section.genres) === '16') return true;
         var match = /[?&](?:with_genres|genre)=([^&#]+)/i.exec(section.url || '');
         if (!match) return false;
@@ -67,6 +67,37 @@
             /(^|\/)search([/?#]|$)/i.test(page.url || '') ||
             !!(page.query && page.component !== 'full' && !animationSection(page));
     }
+
+    // Category and home return a continuation that supplies later batches of rows.
+    // Discard dedicated animation rows before the remote-control focus list is built.
+    function filterBatches(method) {
+        var original = app.Api && app.Api[method];
+        if (typeof original !== 'function') return;
+        app.Api[method] = function (page, loaded, empty) {
+            if (!page || isSearch(page) || typeof loaded !== 'function')
+                return original.apply(this, arguments);
+            var next;
+            function receive(done, end) {
+                return function (batch) {
+                    if (!Array.isArray(batch) || !batch.length) return done(batch);
+                    var kept = batch.filter(function (row) { return !animationSection(row); });
+                    if (kept.length) return done(kept);
+                    // The first callback may run before the source returns its continuation.
+                    setTimeout(function () {
+                        if (typeof next === 'function') next(receive(done, end), end);
+                        else if (typeof end === 'function') end();
+                        else done([]);
+                    }, 0);
+                };
+            }
+            arguments[1] = receive(loaded, empty);
+            next = original.apply(this, arguments);
+            if (typeof next !== 'function') return next;
+            return function (done, end) { return next(receive(done, end), end); };
+        };
+    }
+    filterBatches('category');
+    filterBatches('main');
 
     function decorate(page, component) {
         if (component && !component.lcfDecorated && animationSection(page) &&
@@ -148,8 +179,23 @@
         card.classList.toggle('lcf-excluded', hide);
 
     }
+    function markRow(title) {
+        var row = title.parentElement;
+        while (row && !row.classList.contains('items-line')) row = row.parentElement;
+        if (row) {
+            var ancestor = row;
+            while (ancestor && !ancestor.classList.contains('lcf-scope')) {
+                if (ancestor.classList.contains('main-search') || ancestor.classList.contains('search__results')) return;
+                ancestor = ancestor.parentElement;
+            }
+            if (ancestor) row.classList.toggle('lcf-animation-row', animationSection({title: title.textContent}));
+        }
+    }
     function scan(node) {
         if (!node || node.nodeType !== 1) return;
+        if (node.classList.contains('items-line__title')) markRow(node);
+        var titles = node.querySelectorAll('.items-line__title');
+        for (var n = 0; n < titles.length; n++) markRow(titles[n]);
         if (node.classList.contains('card') || node.classList.contains('card-episode')) mark(node);
         var cards = node.querySelectorAll(selector);
         for (var i = 0; i < cards.length; i++) mark(cards[i]);
@@ -169,6 +215,7 @@
         root.classList.add('lcf-scope');
         root.lcfObserver = new window.MutationObserver(function (changes) {
             changes.forEach(function (change) {
+                if (change.target.classList && change.target.classList.contains('items-line__title')) markRow(change.target);
                 for (var i = 0; i < change.addedNodes.length; i++) scan(change.addedNodes[i]);
             });
         });
@@ -177,7 +224,7 @@
     }
 
     var style = document.createElement('style');
-    style.textContent = '.lcf-scope .lcf-excluded,.lcf-animation-page .card,.lcf-animation-page .card-episode{display:none!important}';
+    style.textContent = '.lcf-scope .lcf-animation-row,.lcf-scope .lcf-excluded,.lcf-animation-page .card,.lcf-animation-page .card-episode{display:none!important}';
     document.head.appendChild(style);
     app.Listener.follow('activity', function (event) {
         var page = event.object;
@@ -188,7 +235,7 @@
         }
     });
     function announce() {
-        if (app.Noty) app.Noty.show('Фильтр карточек 1.1 включён');
+        if (app.Noty) app.Noty.show('Фильтр карточек 1.2 включён');
     }
     if (window.appready) announce();
     else app.Listener.follow('app', function (event) { if (event.type === 'ready') announce(); });
