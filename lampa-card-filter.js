@@ -1,21 +1,30 @@
-/* Lampa card filter 1.0.0. Local display only. ES5 for LG webOS. */
-(function () {
+/* Lampa card filter 1.1.0. ES5 for LG webOS. */
+(function install(attempt) {
     'use strict';
     var app = window.Lampa;
-    if (!app || !app.Listener || window.lampaCardFilterInstalled) return;
+    if (!app || !app.Listener || !app.Activity || !document.head) {
+        if (attempt < 120) setTimeout(function () { install(attempt + 1); }, 500);
+        return;
+    }
+    if (window.lampaCardFilterInstalled) return;
     window.lampaCardFilterInstalled = true;
+
+    function genres(card) {
+        return [].concat(card.genre_ids || [], card.genres || [], card.genre || []);
+    }
+
+    function animation(value) {
+        if (value && typeof value === 'object') return animation(value.id) || animation(value.name);
+        return String(value || '').split(/[,;|/]/).some(function (part) {
+            return /^(16|animation|мультфильм[ы]?|мультсериал[ы]?|анимация)$/i.test(part.trim());
+        });
+    }
 
     function excluded(item) {
         if (!item || typeof item !== 'object') return false;
         var card = item.card || item;
         if (card.media_type === 'person' || typeof card.gender !== 'undefined') return false;
-        function animation(genre) {
-            var id = genre && typeof genre === 'object' ? genre.id : genre;
-            return id === 16 || id === '16';
-        }
-        if ([card.genre_ids, card.genres].some(function (genres) {
-            return Array.isArray(genres) && genres.some(animation);
-        })) return true;
+        if (genres(card).some(animation)) return true;
         var type = card.media_type || card.type;
         if (type === 'movie' || type === 'film') return false;
         var series = type === 'tv' || type === 'series' || type === 'serial' ||
@@ -30,9 +39,21 @@
         });
     }
 
+    function animationSection(section) {
+        if (!section) return false;
+        var title = String(section.title || '').trim();
+        if (/^(мультфильмы|мультсериалы|cartoons|animated series)$/i.test(title) ||
+            /\((мультфильмы|мультсериалы)\)\s*$/i.test(title)) return true;
+        if (String(section.genres) === '16') return true;
+        var match = /[?&](?:with_genres|genre)=([^&#]+)/i.exec(section.url || '');
+        if (!match) return false;
+        var ids = match[1].replace(/%2c/ig, ',');
+        return /^\d+(,\d+)*$/.test(ids) && ids.split(',').indexOf('16') >= 0;
+    }
+
     function filterRow(row) {
         if (!row || !Array.isArray(row.results)) return row;
-        var kept = row.results.filter(function (item) { return !excluded(item); });
+        var kept = animationSection(row) ? [] : row.results.filter(function (item) { return !excluded(item); });
         if (kept.length === row.results.length) return row;
         var copy = {};
         Object.keys(row).forEach(function (key) { copy[key] = row[key]; });
@@ -44,10 +65,25 @@
     function isSearch(page) {
         return /search/i.test(page.component || '') ||
             /(^|\/)search([/?#]|$)/i.test(page.url || '') ||
-            !!(page.query && page.component !== 'full');
+            !!(page.query && page.component !== 'full' && !animationSection(page));
     }
 
     function decorate(page, component) {
+        if (component && !component.lcfDecorated && animationSection(page) &&
+            ['full', 'actor', 'person'].indexOf(page.component) < 0 && app.Empty &&
+            typeof component.create === 'function' && typeof component.render === 'function') {
+            component.lcfDecorated = true;
+            component.create = function () {
+                var empty = new app.Empty({ title: 'Мультфильмы скрыты фильтром',
+                    descr: 'Чтобы найти мультфильм, откройте поиск.' });
+                this.render(true).appendChild(empty.render(true));
+                this.start = function () { empty.start(); };
+                this.activity.loader(false);
+                this.activity.toggle();
+                return this.render();
+            };
+            return;
+        }
         var rows = /^(main|category|bookmarks)$/.test(page.component);
         var grid = /^(favorite|category_full)$/.test(page.component);
         if (!component || component.lcfDecorated || !(rows || grid)) return;
@@ -108,7 +144,9 @@
             }
             parent = parent.parentElement;
         }
-        card.classList.toggle('lcf-excluded', excluded(card.card_data));
+        var hide = excluded(card.card_data);
+        card.classList.toggle('lcf-excluded', hide);
+
     }
     function scan(node) {
         if (!node || node.nodeType !== 1) return;
@@ -126,6 +164,8 @@
         decorate(page, component);
         // Search overlay is outside the activity. Expanded search has its own activity.
         if (root.lcfObserver || !window.MutationObserver) return;
+        if (animationSection(page) && ['full', 'actor', 'person'].indexOf(page.component) < 0)
+            root.classList.add('lcf-animation-page');
         root.classList.add('lcf-scope');
         root.lcfObserver = new window.MutationObserver(function (changes) {
             changes.forEach(function (change) {
@@ -137,7 +177,7 @@
     }
 
     var style = document.createElement('style');
-    style.textContent = '.lcf-scope .lcf-excluded{display:none!important}';
+    style.textContent = '.lcf-scope .lcf-excluded,.lcf-animation-page .card,.lcf-animation-page .card-episode{display:none!important}';
     document.head.appendChild(style);
     app.Listener.follow('activity', function (event) {
         var page = event.object;
@@ -147,5 +187,10 @@
             if (root && root.lcfObserver) root.lcfObserver.disconnect();
         }
     });
+    function announce() {
+        if (app.Noty) app.Noty.show('Фильтр карточек 1.1 включён');
+    }
+    if (window.appready) announce();
+    else app.Listener.follow('app', function (event) { if (event.type === 'ready') announce(); });
     if (app.Activity && app.Activity.active) attach(app.Activity.active());
-}());
+}(0));
