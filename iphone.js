@@ -2338,9 +2338,89 @@ var secret, db, channel, stream, modal = false, recent = [];
 function randomKey() {
     return Array.prototype.map.call(box.randomBytes(32), function (v) { return ('0'+v.toString(16)).slice(-2); }).join('');
 }
+function visible(el) { return el && el.getClientRects().length && el.offsetWidth && el.offsetHeight; }
+    function editorAt(node) {
+        if (!visible(node) || node.disabled || node.readOnly) return null;
+        if (node.isContentEditable || node.tagName === 'TEXTAREA' ||
+            (node.tagName === 'INPUT' && /^(text|url|search|email|tel|password)$/i.test(node.type))) return node;
+        return null;
+    }
+
+    function currentEditor() {
+        var direct = editorAt(document.activeElement) || editorAt(document.querySelector('.selector.focus'));
+        if (direct) return direct;
+        var keys = Object.values(window.SimpleKeyboardInstances || {}).filter(function (kbd) {
+            return visible(kbd.keyboardDOM) && typeof kbd.getInput === 'function' && typeof kbd.options.onChange === 'function';
+        });
+        if (keys.length === 1) return keys[0];
+        var inputs = Array.prototype.filter.call(document.querySelectorAll('.simple-keyboard input, .simple-keyboard textarea'), editorAt);
+        return inputs.length === 1 ? inputs[0] : null;
+    }
+
+    function insert(target, text) {
+        // Some Lampa editors render their value as HTML.
+        if (text.indexOf('<') >= 0 && (target.keyboardDOM || target.id === 'orsay-keyboard')) {
+            throw Error('Эта клавиатура Lampa не поддерживает знак «<».');
+        }
+        if (target.keyboardDOM) {
+            var old = target.getInput();
+            var from = target.getCaretPosition(), to = target.getCaretPositionEnd();
+            if (typeof from !== 'number') from = old.length;
+            if (typeof to !== 'number') to = from;
+            var value = old.slice(0,from) + text + old.slice(to);
+            target.setInput(value);
+            target.setCaretPosition(from + text.length, from + text.length);
+            target.options.onChange(value);
+        } else {
+            if (target.tagName === 'INPUT' && /[\r\n]/.test(text)) throw Error('Это однострочное поле. Уберите переносы строк.');
+            target.focus();
+            if (target.isContentEditable) {
+                if (!document.execCommand('insertText', false, text)) throw Error('Поле отклонило вставку.');
+                return;
+            }
+            var start = target.selectionStart, end = target.selectionEnd;
+            if (start === null) { start = end = target.value.length; }
+            if (target.maxLength >= 0 && target.value.length - end + start + text.length > target.maxLength) throw Error('Текст превышает ограничение поля.');
+            if (typeof target.setRangeText === 'function' && target.selectionStart !== null)
+                target.setRangeText(text, start, end, 'end');
+            else target.value = target.value.slice(0,start) + text + target.value.slice(end);
+            target.dispatchEvent(new Event('input',{bubbles:true}));
+        }
+    }
+
+
+var pasteStream, incoming = Object.create(null);
+function receivePaste(msg) {
+    if (!msg || !/^[0-9a-f]{32}$/.test(msg.id) || !Number.isFinite(msg.at) ||
+        Math.abs(Date.now()-msg.at)>60000 || recent.indexOf(msg.id)>=0 ||
+        !Number.isInteger(msg.part) || !Number.isInteger(msg.total) || msg.total < 1 || msg.total > 64 ||
+        msg.part < 0 || msg.part >= msg.total || typeof msg.text !== 'string' || msg.text.length > 450) return;
+    Object.keys(incoming).forEach(function (id) {
+        if (Date.now()-incoming[id].created > 60000) delete incoming[id];
+    });
+    var pending = incoming[msg.id];
+    if (!pending) {
+        if (Object.keys(incoming).length >= 8) return;
+        pending = incoming[msg.id] = {created:Date.now(), target:currentEditor(), total:msg.total, parts:[], count:0};
+    }
+    if (pending.total !== msg.total || pending.parts[msg.part] !== undefined) return;
+    pending.parts[msg.part] = msg.text;
+    if (++pending.count !== pending.total) return;
+    delete incoming[msg.id];
+    recent.push(msg.id);
+    if (recent.length > 64) recent.shift();
+    var error = '';
+    try {
+        if (document.hidden || !pending.target || pending.target !== currentEditor())
+            throw Error('На телевизоре откройте нужное поле ввода и повторите.');
+        insert(pending.target, pending.parts.join(''));
+    } catch (e) { error = e.message; }
+    channel.send('-reply',{id:msg.id,ok:!error,error:error}).catch(function () {});
+}
 function listen() {
     if (!secret || document.hidden || stream) return;
     channel = phoneChannel(secret, box);
+    pasteStream = channel.listen('-paste', receivePaste);
     stream = channel.listen('-query', function (msg) {
         if (typeof msg.text !== 'string' || !msg.text.trim() || msg.text.length > 300 ||
             /[<>\x00-\x1f]/.test(msg.text) || !/^[a-f0-9]{32}$/.test(msg.id) ||
@@ -2389,7 +2469,7 @@ function init() {
         get.onsuccess = function () { secret = get.result; listen(); };
     };
     document.addEventListener('visibilitychange',function () {
-        if (document.hidden && stream) {stream.close(); stream = null;}
+        if (document.hidden && stream) {stream.close(); pasteStream.close(); stream = null; incoming = Object.create(null);}
         else listen();
     });
 }
