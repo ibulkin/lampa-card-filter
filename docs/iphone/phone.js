@@ -4,18 +4,50 @@
     var notice = function (text) { byId('notice').textContent = text; };
     var devices, storage = 'lampa-phone-devices-v1';
     try { devices = JSON.parse(localStorage.getItem(storage) || '[]'); } catch (_) { devices = []; }
+    function validRooms(list) {
+        return Array.isArray(list) && list.length > 0 && list.length <= 20 &&
+            list.every(function (d) { return d && typeof d.name === 'string' && d.name.length <= 48 &&
+                typeof d.key === 'string' && /^[a-f0-9]{64}$/.test(d.key); });
+    }
+    if (!validRooms(devices)) devices = [];
     var pending = location.hash.slice(1);
+    function remember() {
+        try { localStorage.setItem(storage, JSON.stringify(devices)); } catch (_) {}
+    }
+    function merge(rooms) {
+        rooms.forEach(function (d) {
+            var old = devices.find(function (item) { return item.key === d.key; });
+            if (old) old.name = d.name;
+            else devices.push({name:d.name, key:d.key});
+        });
+    }
+    if (pending.indexOf('rooms=') === 0) {
+        try {
+            var linked = JSON.parse(decodeURIComponent(pending.slice(6)));
+            if (!validRooms(linked)) throw Error();
+            merge(linked); remember();
+        } catch (_) { notice('Персональная ссылка обрезана. Откройте сохранённую ссылку целиком.'); }
+    }
+    function personalURL() {
+        return location.origin + location.pathname.replace(/[^/]*$/, '') + 'remote.html#rooms=' +
+            encodeURIComponent(JSON.stringify(devices));
+    }
+    function lastRoom() { try { return localStorage.getItem('lampa-phone-last'); } catch (_) { return ''; } }
     function refresh(active) {
         var selector = byId('devices');
         selector.textContent = '';
         devices.forEach(function (device) { selector.add(new Option(device.name, device.key)); });
         if (active) selector.value = active;
         byId('search').hidden = !devices.length;
+        byId('personal').hidden = !devices.length;
+        if (devices.length) byId('personal').href = personalURL();
         if (!devices.length) notice('Откройте значок телефона в Lampa+ и отсканируйте QR-код.');
     }
-    refresh(localStorage.getItem('lampa-phone-last'));
-    byId('devices').onchange = function () { localStorage.setItem('lampa-phone-last', this.value); };
-    if (/^[0-9a-f]{64}$/.test(pending)) {
+    refresh(lastRoom());
+    byId('devices').onchange = function () { try { localStorage.setItem('lampa-phone-last', this.value); } catch (_) {} };
+    var known = devices.find(function (d) { return d.key === pending; });
+    if (known) refresh(pending);
+    else if (/^[0-9a-f]{64}$/.test(pending)) {
         byId('pair').hidden = false;
         byId('search').hidden = true;
         var existing = devices.find(function (d) { return d.key === pending; });
@@ -28,9 +60,8 @@
         if (!name) return;
         devices = devices.filter(function (d) { return d.key !== pending; });
         devices.push({key:pending, name:name});
-        try { localStorage.setItem(storage, JSON.stringify(devices)); }
-        catch (_) { notice('Chrome не смог сохранить телевизор. Откройте обычную вкладку.'); return; }
-        history.replaceState(null, '', location.pathname);
+        remember();
+        history.replaceState(null, '', location.pathname + personalURL().slice(personalURL().indexOf('#')));
         byId('pair').hidden = true;
         refresh(pending); notice('Телевизор сохранён.');
     };
