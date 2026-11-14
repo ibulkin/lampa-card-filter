@@ -13,6 +13,10 @@
         !(navigator.maxTouchPoints > 1 && /Mac|iPad/.test(navigator.platform))) return;
 
     var version = 'Filmix v1.0.7';
+    var movies = new WeakMap();
+    function canOpen(card) {
+        return movies.has(card) && window.Lampa && Lampa.Component.get('online_fxapi');
+    }
     function sourceIn(card) {
         var choices = card.querySelectorAll('.buttons--container .full-start__button:not(.hide)');
         for (var i = 0; i < choices.length; i++) {
@@ -25,7 +29,7 @@
         if (!card) return;
         var custom = row.querySelector('.filmix-iphone-shortcut');
         var source = sourceIn(card);
-        if (!source || row.querySelector('.button--priority[data-subtitle="Filmix v1.0.7"]')) {
+        if ((!source && !canOpen(card)) || row.querySelector('.button--priority[data-subtitle="Filmix v1.0.7"]')) {
             if (custom) custom.remove();
             return;
         }
@@ -41,9 +45,19 @@
             event.preventDefault();
             event.stopPropagation();
             var current = sourceIn(card);
-            if (!current || Date.now() - last < 600) return;
+            if (Date.now() - last < 600) return;
             last = Date.now();
-            window.jQuery(current).trigger('hover:enter');
+            if (current) window.jQuery(current).trigger('hover:enter');
+            else if (canOpen(card)) {
+                var movie = movies.get(card);
+                var title = movie.title || movie.name || '';
+                Lampa.Activity.push({
+                    url: '', title: 'Filmix', component: 'online_fxapi',
+                    search: title, search_one: title,
+                    search_two: movie.original_title || movie.original_name || '',
+                    movie: movie, page: 1
+                });
+            }
         });
         row.insertBefore(btn, row.firstChild);
     }
@@ -60,5 +74,17 @@
         });
         if (relevant) scan();
     }).observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['data-subtitle','class']});
+    if (window.Lampa && Lampa.Listener) {
+        Lampa.Listener.follow('full', function (event) {
+            if (event.type !== 'complite' || !event.data || !event.data.movie) return;
+            var root = event.body && event.body[0];
+            if (!root) return;
+            root.querySelectorAll('.full-start-new').forEach(function (card) {
+                movies.set(card, event.data.movie);
+                var row = card.querySelector('.full-start-new__buttons');
+                if (row) update(row);
+            });
+        });
+    }
     scan();
 }());
