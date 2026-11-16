@@ -1,0 +1,1 @@
+Based on https://github.com/bylampa/lampa/tree/e38581c161bb51db30d1325fc6000e0f1e2334f4 . iPhone launcher and HTTPS catalog defaults modified 2026-11-16. See LICENSE.
